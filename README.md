@@ -5,7 +5,8 @@
 <p align="center">
   <a href="https://doi.org/10.1190/geo2023-0035.1"><img alt="Geophysics paper" src="https://img.shields.io/badge/Geophysics-10.1190%2Fgeo2023--0035.1-1f6feb"></a>
   <a href="https://arxiv.org/abs/2212.14595"><img alt="arXiv 2212.14595" src="https://img.shields.io/badge/arXiv-2212.14595-b31b1b"></a>
-  <img alt="Python 3.9" src="https://img.shields.io/badge/python-3.9-3776ab">
+  <img alt="Python 3.9 and 3.10" src="https://img.shields.io/badge/python-3.9%20%7C%203.10-3776ab">
+  <a href="https://github.com/izzatum/PnP-SVGD/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/izzatum/PnP-SVGD/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="BSD 3-Clause license" src="https://img.shields.io/badge/license-BSD--3--Clause-2ea44f">
 </p>
 
@@ -37,17 +38,16 @@ Volve field data. The top row shows the prior mean, the PnP-SVGD posterior mean 
 
 ## Installation
 
-The notebooks need conda and a CUDA GPU. The install script downloads the DRUNet weights into `models/`, creates the `pnpsvgd` environment from `environment.yml`, and checks that PyTorch can see the GPU.
+The notebooks need conda and a CUDA GPU. The install script creates the `pnpsvgd` environment from `environment.yml`, installs the package, downloads the DRUNet weights into `models/` and checks that PyTorch can see the GPU.
 
 ```bash
 git clone https://github.com/izzatum/PnP-SVGD.git
 cd PnP-SVGD
 ./install_env.sh
 conda activate pnpsvgd
-pip install -e .
 ```
 
-If the weight download fails, get `drunet_gray.pth` from the [pretrained model folder](https://drive.google.com/drive/folders/1uEYx0GR4D7q5UMsc1qFVW1KeyVYI_hE-?usp=sharing) and place it in `models/`. The paper's experiments ran on one NVIDIA Tesla V100 GPU with an Intel Xeon Platinum 8260 CPU.
+The weights come from the [KAIR release](https://github.com/cszn/KAIR/releases/tag/v1.0) (`drunet_gray.pth`, SHA-256 `e27fb294…0de4`), the same file used for the paper. The paper's experiments ran on one NVIDIA Tesla V100 GPU with an Intel Xeon Platinum 8260 CPU.
 
 ## Notebooks
 
@@ -66,7 +66,29 @@ Each PnP-SVGD iteration has three steps:
 2. Move the particles along that direction with Adam and a cosine learning-rate schedule.
 3. Denoise every particle with DRUNet at a fixed noise level.
 
-The package code is in `pnpsvgd/`. `svgd.py` holds the kernels, the posterior, SVGD and PnP-SVGD. `denoiser.py` wraps DRUNet, and `pnpseismic.py` holds the plug-and-play primal-dual baseline.
+## Package layout
+
+| Module | Contents |
+|---|---|
+| `pnpsvgd/svgd.py` | `SVGD` and `PnPSVGD` samplers |
+| `pnpsvgd/kernels.py` | `RBF` and `IMQ` kernels with the median bandwidth heuristic |
+| `pnpsvgd/posterior.py` | `PosteriorDistribution`: Gaussian likelihood with a Gaussian, uniform or total-variation prior |
+| `pnpsvgd/operators.py` | `TorchOperator`, which lets PyTorch differentiate through PyLops operators |
+| `pnpsvgd/model.py` | `UNetRes`, the DRUNet denoiser |
+| `pnpsvgd/denoiser.py` | `apply_DRUNET` and `apply_DRUNET_optimization`, which scale, pad and denoise models |
+| `pnpsvgd/pnpseismic.py` | Plug-and-play primal-dual solver used as the deterministic baseline |
+| `pnpsvgd/utils.py` | `snr` and solver callbacks |
+
+Every public function has a docstring with its parameters, equations and references. `from pnpsvgd.svgd import *` still gives the samplers, kernels, posterior and operator in one import, as the notebooks expect.
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+The regression tests compare every public function with outputs saved from the original implementation, so changes to the code cannot silently change the paper's results. They run on the CPU in a few seconds.
 
 ## Citation
 
@@ -115,4 +137,4 @@ Muhammad Izzatullah. Website: [izzatullah.com](https://izzatullah.com)
 
 ## License
 
-Released under the BSD 3-Clause License.
+Released under the BSD 3-Clause License. The DRUNet code is adapted from KAIR (MIT License); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

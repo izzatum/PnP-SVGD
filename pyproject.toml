@@ -1,33 +1,61 @@
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
+requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pnpsvgd"
+version = "1.0.0"
+description = "Posterior sampling with plug-and-play deep priors (PnP-SVGD) for post-stack seismic inversion"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "BSD-3-Clause"}
 authors = [
     {name = "Muhammad Izzatullah"},
 ]
-description = "PnP_SVGD"
-readme = "README.md"
-requires-python = ">=3.8"
-keywords = ["inverse problems", "deep learning", "seismic"]
-license = {text = "BSD 3-Clause License"}
+keywords = ["inverse problems", "uncertainty quantification", "Stein variational gradient descent",
+            "plug-and-play", "deep learning", "seismic inversion"]
 classifiers = [
-        "Intended Audience :: Science/Research",
-        "Natural Language :: English",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Topic :: Scientific/Engineering :: Mathematics",
-    ]
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
-        "numpy >= 1.15.0",
-        "torch>=1.10.1",
-	"pyproximal",
-        "pylops >= 1.17.0",
- 	"setuptools >= 61.2.0",
-    ]
+    "numpy>=1.19,<2",
+    "scipy",
+    "torch>=1.10",
+    "pylops>=1.18,<2",
+    "pyproximal>=0.5,<0.6",
+]
 
-dynamic = ["version"]
+[project.optional-dependencies]
+notebooks = ["matplotlib", "segyio", "jupyter"]
+dev = ["pytest", "ruff"]
 
-[tool.setuptools.packages]
-find = {}
+[project.urls]
+Paper = "https://doi.org/10.1190/geo2023-0035.1"
+Preprint = "https://arxiv.org/abs/2212.14595"
+Homepage = "https://izzatullah.com"
+
+[tool.setuptools]
+packages = ["pnpsvgd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "pnpsvgd"]
+addopts = "--doctest-modules"
+filterwarnings = ["ignore::DeprecationWarning:pylops.*", "ignore::DeprecationWarning:pyproximal.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B008", "UP006", "UP007", "UP035"]
+
+[tool.ruff.lint.per-file-ignores]
+"pnpsvgd/denoiser.py" = ["N802"]

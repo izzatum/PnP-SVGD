@@ -1,196 +1,100 @@
-import numpy as np
+"""Stein variational gradient descent (SVGD) and its plug-and-play variant.
+
+The kernels, the PyLops-to-PyTorch operator and the posterior live in their own
+modules and are re-exported here, so ``from pnpsvgd.svgd import *`` keeps working
+as in the example notebooks.
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Tuple
+
 import torch
 import torch.autograd as autograd
-import torch.optim as optim
 
-from torch.distributions.distribution import Distribution
-from pylops import LinearOperator
-from pylops.utils import deps
+from .kernels import IMQ, RBF
+from .operators import TorchOperator
+from .posterior import PosteriorDistribution
 
-
-class _TorchOperator(torch.autograd.Function):
-    """Wrapper class for PyLops operators into Torch functions"""
-
-    @staticmethod
-    def forward(ctx, x, forw, adj):
-        ctx.forw = forw
-        ctx.adj = adj
-
-        # prepare input
-        # bring x to cpu and numpy
-        x = x.cpu().detach().numpy()
-
-        # apply forward operator
-        y = ctx.forw(x)
-
-        # prepare output
-        # move y to torch and device
-        y = torch.from_numpy(y)
-
-        return y
-
-    @staticmethod
-    def backward(ctx, y):
-        # prepare input
-        y = y.cpu().detach().numpy()
-
-        # apply adjoint operator
-        x = ctx.adj(y)
-
-        # prepare output
-        x = torch.from_numpy(x)
-        return x, None, None, None, None
-
-
-class TorchOperator(LinearOperator):
-    def __init__(self, Op, batch=False):
-        if not batch:
-            self.matvec = Op.matvec
-            self.rmatvec = Op.rmatvec
-        else:
-            self.matvec = lambda x: Op.matmat(x.T).T
-            self.rmatvec = lambda x: Op.rmatmat(x.T).T
-        self.Top = _TorchOperator.apply
-        self.shape = Op.shape
-        self.dtype = Op.dtype
-
-    def apply(self, x):
-        return self.Top(x, self.matvec, self.rmatvec)
-
-
-class RBF(torch.nn.Module):
-    """Radial Basis Function (RBF) kernel"""
-    def __init__(self, sigma=None):
-        super(RBF, self).__init__()
-
-        self.sigma = sigma
-
-    def forward(self, X, Y):
-        XX = X.matmul(X.t())
-        XY = X.matmul(Y.t())
-        YY = Y.matmul(Y.t())
-
-        dnorm2 = -2 * XY + XX.diag().unsqueeze(1) + YY.diag().unsqueeze(0)
-
-        # Apply the median
-        if self.sigma is None:
-            np_dnorm2 = dnorm2.detach().cpu().numpy()
-            h = np.median(np_dnorm2) / (2 * np.log(X.size(0) + 1))
-            sigma = np.sqrt(h).item()
-        else:
-            sigma = self.sigma
-
-        gamma = 1.0 / (1e-8 + 2 * sigma ** 2)
-        K_XY = (-gamma * dnorm2).exp()
-
-        return K_XY
-
-
-class IMQ(torch.nn.Module):
-    """Inverse Multiquadric Kernel (IMQ)"""
-    def __init__(self, sigma=None):
-        super(IMQ, self).__init__()
-        self.sigma = sigma
-
-    def forward(self, X, Y):
-        XX = X.matmul(X.t())
-        XY = X.matmul(Y.t())
-        YY = Y.matmul(Y.t())
-
-        dnorm2 = -2 * XY + XX.diag().unsqueeze(1) + YY.diag().unsqueeze(0)
-
-        # Apply the median
-        if self.sigma is None:
-            np_dnorm2 = dnorm2.detach().cpu().numpy()
-            h = np.median(np_dnorm2) / (2 * np.log(X.size(0) + 1))
-            sigma = np.sqrt(h).item()
-        else:
-            sigma = self.sigma
-
-        gamma = 1.0 / (1e-8 + 2 * sigma ** 2)
-        K_XY = (1. + gamma * dnorm2) ** (-0.5)
-
-        return K_XY
-
-
-class PosteriorDistribution(Distribution):
-    """Posterior distribution coupled with Pylops
-    """
-    def __init__(self, x0, C0, d, Gop, Cd, uniprior=False, Gtv=None, xtv=None, Ctv=None, verb=False):
-        """
-        Posterior distribution with Gaussian likelihood and uniform/Gaussian/TV prior
-
-        x0: initial model/particles
-        C0: model prior covariance
-        d: data
-        Gop: forward operator
-        Cd: data noise covariance
-        uniprior: uniform model prior
-        Gtv: Derivative operator for TV prior
-        xtv: mean model for TV prior
-        Ctv: TV covariance
-        verb: verbosity
-        """
-        super(PosteriorDistribution, self).__init__()
-        self.d = d
-        self.Gop = Gop
-        self.Gtv = Gtv
-        self.verb = verb
-
-        if not uniprior:
-            self.prior = torch.distributions.Normal(x0, C0)
-        else:
-            self.prior = torch.distributions.Uniform(x0, C0)
-        if self.Gtv is not None:
-            self.prior1 = torch.distributions.Laplace(xtv, Ctv)
-        self.likelihood = torch.distributions.Normal(d, Cd)
-
-    def log_prob(self, X):
-        """Compute log probabilities
-        """
-        d = self.Gop.apply(X)
-        prior_log_prob = self.prior.log_prob(X).sum()
-        if self.Gtv is not None:
-            prior1_log_prob = self.prior1.log_prob(self.Gtv.apply(X)).sum()
-        likelihood_log_prob = self.likelihood.log_prob(d).sum()
-
-        # sum probabilities 
-        log_prob = prior_log_prob + likelihood_log_prob
-        if self.Gtv is not None:
-            log_prob += prior1_log_prob
-
-        if self.verb:
-            if self.Gtv is None:
-                print(f'prior:{prior_log_prob.item()}, likelihood:{likelihood_log_prob.item()}')
-            else:
-                print(
-                    f'prior:{prior_log_prob.item()}, priorTV:{prior1_log_prob.item()}, likelihood:{likelihood_log_prob.item()}')
-
-        return log_prob
+__all__ = ["SVGD", "PnPSVGD", "RBF", "IMQ", "TorchOperator", "PosteriorDistribution"]
 
 
 class SVGD:
-    def __init__(self, P, K, optimizer, scheduler):
-        """
-        Simulate SVGD for n number of particles
+    r"""Stein variational gradient descent.
 
-        P: Posterior Distributions
-        K: Kernel (RBF or IMQ)
-        optimizer: PyTorch optimizer
-        scheduler: PyTorch learning rate scheduler
-        """
+    Moves a set of particles :math:`\{x_i\}_{i=1}^n` towards the posterior
+    :math:`p` along the Stein direction
+
+    .. math::
+
+        \phi(x) = \frac{1}{n} \sum_{j=1}^{n} \left[ k(x_j, x)\, \nabla_{x_j} \log p(x_j)
+        + \nabla_{x_j} k(x_j, x) \right].
+
+    The first term pulls particles towards high posterior density and the
+    second keeps them apart. The particle update itself is done by a PyTorch
+    optimizer, which receives :math:`-\phi` as the gradient.
+
+    Parameters
+    ----------
+    P : PosteriorDistribution
+        Target distribution. Any object with a differentiable ``log_prob``
+        method that returns a scalar works.
+    K : torch.nn.Module
+        Kernel, for example :class:`~pnpsvgd.kernels.RBF` or
+        :class:`~pnpsvgd.kernels.IMQ`.
+    optimizer : torch.optim.Optimizer
+        Optimizer built on the particle tensor, for example
+        ``torch.optim.Adam([X], lr=0.1)``.
+    scheduler : torch.optim.lr_scheduler.LRScheduler, optional
+        Learning-rate scheduler, stepped once per iteration.
+
+    References
+    ----------
+    .. [1] Liu, Q., and Wang, D. (2016). Stein variational gradient descent: a
+       general purpose Bayesian inference algorithm. Advances in Neural
+       Information Processing Systems 29.
+
+    Examples
+    --------
+    Sample a standard normal distribution in two dimensions:
+
+    >>> import torch
+    >>> from pnpsvgd.svgd import SVGD, RBF
+    >>> class StdNormal:
+    ...     def log_prob(self, X):
+    ...         return -0.5 * (X ** 2).sum()
+    >>> _ = torch.manual_seed(0)
+    >>> X = torch.randn(50, 2) + 3.0
+    >>> sampler = SVGD(StdNormal(), RBF(), torch.optim.Adam([X], lr=0.1))
+    >>> for _ in range(200):
+    ...     _ = sampler.step(X)
+    >>> bool(X.mean(0).abs().max() < 0.5)
+    True
+    """
+
+    def __init__(self, P, K: torch.nn.Module, optimizer: torch.optim.Optimizer,
+                 scheduler=None) -> None:
         self.P = P
         self.K = K
         self.optimizer = optimizer
         self.scheduler = scheduler
 
-    def phi(self, X):
-        """
-        Compute the Stein Gradient. The terms inside the square bracket above.
+    def phi(self, X: torch.Tensor) -> Tuple[torch.Tensor, float]:
+        """Compute the update direction for all particles.
 
-        X: n number of models (particles)
-        """
+        Parameters
+        ----------
+        X : torch.Tensor
+            Particles of shape ``(n_particles, n_model)``.
 
+        Returns
+        -------
+        grad : torch.Tensor
+            Negative Stein direction :math:`-\\phi(X)`, to be used as the
+            gradient of the particles.
+        log_prob : float
+            Log-posterior of the current particles.
+        """
         X = X.detach().requires_grad_(True)
         log_prob = self.P.log_prob(X)
         score_func = autograd.grad(log_prob, X)[0]
@@ -199,71 +103,104 @@ class SVGD:
         grad_K = -autograd.grad(K_XX.sum(), X)[0]
 
         phi = (K_XX.detach().matmul(score_func) + grad_K) / X.size(0)
-
         return -phi, log_prob.item()
 
-    def step(self, X):
+    def step(self, X: torch.Tensor) -> float:
+        """Run one SVGD iteration in place.
+
+        Parameters
+        ----------
+        X : torch.Tensor
+            Particles registered with the optimizer. They are updated in place.
+
+        Returns
+        -------
+        float
+            Log-posterior of the particles before the update.
+        """
         self.optimizer.zero_grad()
         X.grad, log_prob = self.phi(X)
         self.optimizer.step()
-
-        if self.scheduler:
+        self._after_update(X)
+        if self.scheduler is not None:
             self.scheduler.step()
-
         return log_prob
 
+    def _after_update(self, X: torch.Tensor) -> None:
+        """Hook called after the optimizer step and before the scheduler step."""
 
-class PnPSVGD:
-    def __init__(self, Denoiser, P, K, optimizer, scheduler=None, loops=None):
-        """
-        Simulate SVGD for n number of particles
-        
-        Denoiser: PyTorch denoiser model in lambda
-        P: Posterior Distributions
-        K: Kernel (RBF or IMQ)
-        optimizer: PyTorch optimizer
-        scheduler: PyTorch learning rate scheduler
-        loops: Number of batches to separate particle into for denoising. This should be tuned to avoid the CNN-based denoiser 
-        running into GPU memories issues (the smaller the faster as denoising leverages GPU vectorization)
-        """
-        self.denoiser = Denoiser
-        self.P = P
-        self.K = K
-        self.optimizer = optimizer
-        self.scheduler = scheduler
+
+class PnPSVGD(SVGD):
+    """Plug-and-play SVGD: an SVGD step followed by denoising every particle.
+
+    Each iteration first moves the particles with :class:`SVGD` and then
+    replaces every particle :math:`x_i` with :math:`D(x_i)`, the output of a
+    pretrained denoiser. The denoiser acts as an implicit prior that keeps the
+    particles close to the structures it was trained on.
+
+    Parameters
+    ----------
+    denoiser : callable
+        Function that takes a batch of particles of shape
+        ``(n, n_model)`` and returns denoised particles of the same shape, for
+        example a wrapper around :func:`~pnpsvgd.denoiser.apply_DRUNET`.
+    P : PosteriorDistribution
+        Target distribution.
+    K : torch.nn.Module
+        Kernel.
+    optimizer : torch.optim.Optimizer
+        Optimizer built on the particle tensor.
+    scheduler : torch.optim.lr_scheduler.LRScheduler, optional
+        Learning-rate scheduler, stepped once per iteration.
+    loops : int, optional
+        Denoise the particles in chunks of ``n_particles // loops`` to limit GPU
+        memory, so 100 particles with ``loops=5`` go through the denoiser 20 at a
+        time. When ``loops`` does not divide the number of particles, one extra
+        smaller chunk takes the remainder. Fewer, larger chunks are faster when
+        memory allows. By default all particles are denoised in one call.
+
+    References
+    ----------
+    .. [1] Izzatullah, M., Alkhalifah, T., Romero, J., Corrales, M., Luiken, N.,
+       and Ravasi, M. (2024). Posterior sampling with convolutional neural
+       network-based plug-and-play regularization with applications to
+       poststack seismic inversion. Geophysics, 89(2), R137.
+       https://doi.org/10.1190/geo2023-0035.1
+    .. [2] Venkatakrishnan, S. V., Bouman, C. A., and Wohlberg, B. (2013).
+       Plug-and-play priors for model based reconstruction. IEEE Global
+       Conference on Signal and Information Processing.
+    .. [3] Liu, Q., and Wang, D. (2016). Stein variational gradient descent: a
+       general purpose Bayesian inference algorithm. Advances in Neural
+       Information Processing Systems 29.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from pnpsvgd.svgd import PnPSVGD, RBF
+    >>> class StdNormal:
+    ...     def log_prob(self, X):
+    ...         return -0.5 * (X ** 2).sum()
+    >>> X = torch.ones(10, 4)
+    >>> shrink = lambda z: 0.9 * z
+    >>> sampler = PnPSVGD(shrink, StdNormal(), RBF(), torch.optim.SGD([X], lr=0.1), loops=2)
+    >>> _ = sampler.step(X)
+    >>> X.shape
+    torch.Size([10, 4])
+    """
+
+    def __init__(self, denoiser: Callable[[torch.Tensor], torch.Tensor], P, K: torch.nn.Module,
+                 optimizer: torch.optim.Optimizer, scheduler=None,
+                 loops: int | None = None) -> None:
+        super().__init__(P, K, optimizer, scheduler)
+        self.denoiser = denoiser
         self.loops = loops
 
-    def phi(self, X):
-        """
-        Compute the Stein Gradient. The terms inside the square bracket above.
-
-        X: n number of models (particles)
-        """
-
-        X = X.detach().requires_grad_(True)
-        log_prob = self.P.log_prob(X)
-        score_func = autograd.grad(log_prob, X)[0]
-
-        K_XX = self.K(X, X.detach())
-        grad_K = -autograd.grad(K_XX.sum(), X)[0]
-
-        phi = (K_XX.detach().matmul(score_func) + grad_K) / X.size(0)
-
-        return -phi, log_prob.item()
-
-    def step(self, X):
-        self.optimizer.zero_grad()
-        X.grad, log_prob = self.phi(X)
-        self.optimizer.step()
-
-        if self.loops is not None:
-            for i in range(0, X.shape[0], X.shape[0] // self.loops):
-                X.data[i:i + X.shape[0] // self.loops] = self.denoiser(X.data[i:i + X.shape[0] // self.loops])
-        else:
+    def _after_update(self, X: torch.Tensor) -> None:
+        if self.loops is None:
             X.data = self.denoiser(X.data)
-
-        if self.scheduler:
-            self.scheduler.step()
-
-        return log_prob
-
+            return
+        chunk = X.shape[0] // self.loops
+        if chunk == 0:
+            raise ValueError(f"loops={self.loops} is larger than the number of particles ({X.shape[0]})")
+        for i in range(0, X.shape[0], chunk):
+            X.data[i:i + chunk] = self.denoiser(X.data[i:i + chunk])

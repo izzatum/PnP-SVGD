@@ -1,32 +1,35 @@
-#!/bin/bash
-# 
-# Installer for PnPSVGD environment
-# 
-# Run: ./install_env.sh
-# 
-# M. Izzatullah, 15/12/2022
+#!/usr/bin/env bash
+# Create the pnpsvgd conda environment, install the package and fetch the DRUNet weights.
+#
+# Usage: ./install_env.sh   (safe to run again: it updates the environment if it exists)
+set -euo pipefail
 
-# download DRUNet model
-echo 'Downloading required DRUNet model'
+cd "$(dirname "$0")"
 
-FILEID='1g3UcCEjVsnziCwtRyBZKGz9HlCsMsWmU'
-FILENAME=$(pwd)/models/drunet_gray.pth
+WEIGHTS=models/drunet_gray.pth
+WEIGHTS_URL=https://github.com/cszn/KAIR/releases/download/v1.0/drunet_gray.pth
+WEIGHTS_SHA256=e27fb29456732c604c8ee3ac3e92ecadd2a7a4e36a8be675e92ebbf93a240de4
 
-wget --load-cookies /tmp/cookies.txt "https://docs.google.com/uc?export=download&confirm=$(wget --quiet --save-cookies /tmp/cookies.txt --keep-session-cookies --no-check-certificate 'https://docs.google.com/uc?export=download&id=$FILEID' -O- | sed -rn 's/.*confirm=([0-9A-Za-z_]+).*/\1\n/p')&id=$FILEID" -O $FILENAME && rm -rf /tmp/cookies.txt
-
-echo 'Download complete!'
-
-# create conda env
-echo 'Creating pnpsvgd environment'
-
-conda env create -f environment.yml
-source ~/miniconda3/etc/profile.d/conda.sh
+echo "Creating the pnpsvgd conda environment"
+conda env create -f environment.yml || conda env update -f environment.yml
+eval "$(conda shell.bash hook)"
 conda activate pnpsvgd
-conda env list
-echo 'Created and activated environment:' $(which python)
+pip install -e .
 
-# Check cupy works as expected
-echo 'Checking cupy version and running a command...'
-python -c 'import cupy as cp; print(cp.__version__); import torch; print(torch.__version__);  print(torch.cuda.get_device_name(torch.cuda.current_device())); print(torch.ones(10).to("cuda:0"))'
+sha256() { python -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }
 
-echo 'Done!'
+if [ ! -f "$WEIGHTS" ] || [ "$(sha256 "$WEIGHTS")" != "$WEIGHTS_SHA256" ]; then
+  echo "Downloading the DRUNet weights to $WEIGHTS"
+  curl -fL --retry 3 -o "$WEIGHTS.part" "$WEIGHTS_URL"
+  if [ "$(sha256 "$WEIGHTS.part")" != "$WEIGHTS_SHA256" ]; then
+    rm -f "$WEIGHTS.part"
+    echo "The downloaded weights do not match the expected SHA-256. Nothing was installed." >&2
+    exit 1
+  fi
+  mv "$WEIGHTS.part" "$WEIGHTS"
+fi
+
+echo "Checking PyTorch and the GPU"
+python -c 'import torch; print("torch", torch.__version__); print("GPU:", torch.cuda.get_device_name(0))'
+
+echo "Done. Activate the environment with: conda activate pnpsvgd"
