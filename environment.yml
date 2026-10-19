@@ -1,0 +1,23 @@
+name: pnpsvgd
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9.15
+  - pip
+  - numpy=1.23.5
+  - scipy=1.9.3
+  - cudatoolkit=11.3
+  - setuptools=65.5.1
+  - matplotlib=3.6.2
+  - pylops=1.18.3
+  - ipython=8.6.0
+  - jupyter=1.0.0
+  - pytorch==1.10.1
+  - torchvision=0.11.2
+  - pip:
+    - cupy-cuda113==10.6.0
+    - segyio==1.9.9
+    - torchsummary==1.5.1
+    - pyproximal==0.5.0

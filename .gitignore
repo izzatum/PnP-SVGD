@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.ipynb_checkpoints/
+
+# Pre-trained weights (see models/Download_DRUnet.md)
+*.pth
+
+.DS_Store
